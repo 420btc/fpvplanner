@@ -118,10 +118,33 @@ function tileUrl(x: number, y: number, z: number) {
   return `https://api.mapbox.com/styles/v1/${MAPBOX_STYLE}/tiles/256/${z}/${x}/${y}?access_token=${MAPBOX_TOKEN}`;
 }
 
-function GroundMap({ lat, lng, position }: { lat: number; lng: number; position: THREE.Vector3 }) {
+function GroundMap({
+  lat,
+  lng,
+  position,
+  onReady,
+}: {
+  lat: number;
+  lng: number;
+  position: THREE.Vector3;
+  onReady: (ready: boolean) => void;
+}) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const zoom = 16;
   const size = mapSizeForLat(lat, zoom);
+  const geometry = useMemo(() => {
+    const geo = new THREE.PlaneGeometry(size, size, 128, 128);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const h = (Math.sin(x * 0.03) + Math.cos(y * 0.03)) * 0.6 + Math.sin((x + y) * 0.02) * 0.4;
+      pos.setZ(i, h);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    return geo;
+  }, [size]);
 
   useEffect(() => {
     let active = true;
@@ -135,6 +158,7 @@ function GroundMap({ lat, lng, position }: { lat: number; lng: number; position:
 
     if (!MAPBOX_TOKEN) {
       setTexture(null);
+      onReady(false);
       return () => {
         active = false;
       };
@@ -171,18 +195,19 @@ function GroundMap({ lat, lng, position }: { lat: number; lng: number; position:
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       setTexture(tex);
+      onReady(true);
     });
 
     return () => {
       active = false;
     };
-  }, [lat, lng, zoom]);
+  }, [lat, lng, zoom, onReady]);
 
   if (!texture) return null;
 
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[position.x, -0.04, position.z]}>
-      <planeGeometry args={[size, size]} />
+      <primitive object={geometry} />
       <meshStandardMaterial map={texture} roughness={1} metalness={0} />
     </mesh>
   );
@@ -195,7 +220,7 @@ function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
 
   return (
     <mesh geometry={geometry}>
-      <meshStandardMaterial color="#f97316" emissive="#ea580c" emissiveIntensity={0.5} transparent opacity={0.9} />
+      <meshBasicMaterial color="#3b82f6" transparent opacity={0.9} />
     </mesh>
   );
 }
@@ -251,6 +276,7 @@ function DroneSimulation({ points }: { points: THREE.Vector3[] }) {
 function Scene() {
   const { waypoints } = useRoute();
   const points = useMemo(() => waypointsTo3D(waypoints), [waypoints]);
+  const [mapReady, setMapReady] = useState(false);
   const curveLatLng = useMemo(() => generateBezierPoints(waypoints), [waypoints]);
   const curvePoints = useMemo(() => {
     if (waypoints.length === 0) return [];
@@ -274,18 +300,25 @@ function Scene() {
       <ambientLight intensity={0.4} />
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
       {waypoints.length > 0 && (
-        <GroundMap lat={mapCenter.lat} lng={mapCenter.lng} position={gridCenter} />
+        <GroundMap
+          lat={mapCenter.lat}
+          lng={mapCenter.lng}
+          position={gridCenter}
+          onReady={setMapReady}
+        />
       )}
-      <Grid
-        args={[300, 300]}
-        position={[gridCenter.x, 0, gridCenter.z]}
-        cellSize={1}
-        cellColor="#94a3b8"
-        sectionSize={5}
-        sectionColor="#cbd5f5"
-        fadeDistance={240}
-        fadeStrength={1}
-      />
+      {!mapReady && (
+        <Grid
+          args={[300, 300]}
+          position={[gridCenter.x, 0, gridCenter.z]}
+          cellSize={1}
+          cellColor="#94a3b8"
+          sectionSize={5}
+          sectionColor="#cbd5f5"
+          fadeDistance={240}
+          fadeStrength={1}
+        />
+      )}
       <WaypointSpheres points={points} />
       {curve && <RouteTube curve={curve} />}
       {curvePoints.length > 1 && <DroneSimulation points={curvePoints} />}
