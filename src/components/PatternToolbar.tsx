@@ -6,7 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { MousePointer } from 'lucide-react';
 
 export default function PatternToolbar() {
-  const { activePattern, setActivePattern, patternRadius, setPatternRadius } = useRoute();
+  const { activePattern, setActivePattern, patternRadius, setPatternRadius, lastPattern } = useRoute();
 
   return (
     <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-1 rounded-lg border border-border bg-card/70 p-1.5 backdrop-blur-sm shadow-lg">
@@ -43,7 +43,7 @@ export default function PatternToolbar() {
         </Tooltip>
       ))}
 
-      {activePattern && (
+      {(activePattern || lastPattern) && (
         <>
           <div className="mt-1 border-t border-border pt-1">
             <p className="text-[10px] text-center text-primary font-medium">
