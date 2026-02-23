@@ -241,18 +241,11 @@ export default function MapView() {
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
       >
-        <PatternToolbar />
-      </div>
-      <div
-        className="absolute top-3 left-16 z-[1000]"
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
         <Button
           size="sm"
           variant="secondary"
           onClick={() => setMapStyle(prev => prev === 'satellite' ? 'normal' : 'satellite')}
-          className="h-8 text-xs"
+          className="h-8 text-xs shadow-md border border-border"
         >
           {mapStyle === 'satellite' ? 'Normal' : 'Satélite'}
         </Button>
