@@ -1,10 +1,12 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { useRoute } from '@/contexts/RouteContext';
 
 const SCALE = 3;
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
+const MAPBOX_STYLE = 'mapbox/satellite-v9';
 
 function toPoint3D(lat: number, lng: number, altitude: number, centerLat: number, centerLng: number) {
   const x = (lng - centerLng) * 111320 * Math.cos(centerLat * Math.PI / 180) / 10 * SCALE;
@@ -67,6 +69,125 @@ function createCatmullRomCurve(points: THREE.Vector3[]) {
   return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
 }
 
+function centerXZ(points: THREE.Vector3[]) {
+  if (points.length === 0) return new THREE.Vector3(0, 0, 0);
+  let minX = points[0].x;
+  let maxX = points[0].x;
+  let minZ = points[0].z;
+  let maxZ = points[0].z;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  return new THREE.Vector3((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
+}
+
+function centerLatLng(waypoints: { lat: number; lng: number }[]) {
+  if (waypoints.length === 0) return { lat: 0, lng: 0 };
+  let minLat = waypoints[0].lat;
+  let maxLat = waypoints[0].lat;
+  let minLng = waypoints[0].lng;
+  let maxLng = waypoints[0].lng;
+  for (const p of waypoints) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+  return { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
+}
+
+function latLngToTile(lat: number, lng: number, zoom: number) {
+  const n = Math.pow(2, zoom);
+  const xtile = Math.floor((lng + 180) / 360 * n);
+  const latRad = lat * Math.PI / 180;
+  const ytile = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+  return { x: xtile, y: ytile };
+}
+
+function mapSizeForLat(lat: number, zoom: number) {
+  const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+  const widthMeters = metersPerPixel * 256 * 3;
+  return widthMeters / 10 * SCALE;
+}
+
+function tileUrl(x: number, y: number, z: number) {
+  if (!MAPBOX_TOKEN) return null;
+  return `https://api.mapbox.com/styles/v1/${MAPBOX_STYLE}/tiles/256/${z}/${x}/${y}?access_token=${MAPBOX_TOKEN}`;
+}
+
+function GroundMap({ lat, lng, position }: { lat: number; lng: number; position: THREE.Vector3 }) {
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  const zoom = 16;
+  const size = mapSizeForLat(lat, zoom);
+
+  useEffect(() => {
+    let active = true;
+    const { x, y } = latLngToTile(lat, lng, zoom);
+    const tiles: Array<[number, number]> = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        tiles.push([x + dx, y + dy]);
+      }
+    }
+
+    if (!MAPBOX_TOKEN) {
+      setTexture(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const canvas = document.createElement('canvas');
+    const tileSize = 256;
+    canvas.width = tileSize * 3;
+    canvas.height = tileSize * 3;
+    const ctx = canvas.getContext('2d');
+
+    if (!ctx) return;
+
+    Promise.all(tiles.map(([tx, ty]) => {
+      return new Promise<{ img: HTMLImageElement; dx: number; dy: number }>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
+        img.onerror = () => resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
+        const url = tileUrl(tx, ty, zoom);
+        if (!url) {
+          resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
+          return;
+        }
+        img.src = url;
+      });
+    })).then((images) => {
+      if (!active) return;
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      images.forEach(({ img, dx, dy }) => {
+        ctx.drawImage(img, dx * tileSize, dy * tileSize, tileSize, tileSize);
+      });
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      setTexture(tex);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [lat, lng, zoom]);
+
+  if (!texture) return null;
+
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[position.x, -0.04, position.z]}>
+      <planeGeometry args={[size, size]} />
+      <meshStandardMaterial map={texture} roughness={1} metalness={0} />
+    </mesh>
+  );
+}
+
 function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
   const geometry = useMemo(() => {
     return new THREE.TubeGeometry(curve, 128, 0.15, 8, false);
@@ -74,7 +195,7 @@ function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
 
   return (
     <mesh geometry={geometry}>
-      <meshStandardMaterial color="#3b82f6" emissive="#1d4ed8" emissiveIntensity={0.5} transparent opacity={0.85} />
+      <meshStandardMaterial color="#f97316" emissive="#ea580c" emissiveIntensity={0.5} transparent opacity={0.9} />
     </mesh>
   );
 }
@@ -85,7 +206,7 @@ function WaypointSpheres({ points }: { points: THREE.Vector3[] }) {
       {points.map((p, i) => (
         <mesh key={i} position={p}>
           <sphereGeometry args={[0.3, 16, 16]} />
-          <meshStandardMaterial color="#60a5fa" emissive="#3b82f6" emissiveIntensity={0.8} />
+          <meshStandardMaterial color="#e2e8f0" emissive="#94a3b8" emissiveIntensity={0.6} />
         </mesh>
       ))}
     </>
@@ -142,25 +263,33 @@ function Scene() {
     });
   }, [curveLatLng, waypoints]);
   const curve = useMemo(() => createCatmullRomCurve(curvePoints), [curvePoints]);
+  const gridCenter = useMemo(() => {
+    const base = curvePoints.length > 0 ? curvePoints : points;
+    return centerXZ(base);
+  }, [curvePoints, points]);
+  const mapCenter = useMemo(() => centerLatLng(waypoints), [waypoints]);
 
   return (
     <>
       <ambientLight intensity={0.4} />
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
+      {waypoints.length > 0 && (
+        <GroundMap lat={mapCenter.lat} lng={mapCenter.lng} position={gridCenter} />
+      )}
       <Grid
         args={[300, 300]}
-        position={[0, 0, 0]}
+        position={[gridCenter.x, 0, gridCenter.z]}
         cellSize={1}
-        cellColor="#1e3a5f"
+        cellColor="#94a3b8"
         sectionSize={5}
-        sectionColor="#2563eb"
+        sectionColor="#cbd5f5"
         fadeDistance={240}
         fadeStrength={1}
       />
       <WaypointSpheres points={points} />
       {curve && <RouteTube curve={curve} />}
       {curvePoints.length > 1 && <DroneSimulation points={curvePoints} />}
-      <OrbitControls makeDefault />
+      <OrbitControls makeDefault target={[gridCenter.x, 0, gridCenter.z]} />
     </>
   );
 }
