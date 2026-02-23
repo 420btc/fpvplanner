@@ -4,6 +4,7 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import mapboxgl from 'mapbox-gl';
 import * as THREE from 'three';
 import { useRoute } from '@/contexts/RouteContext';
+import { RouteAnalysis } from '@/lib/physics';
 
 const SCALE = 3;
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
@@ -56,6 +57,70 @@ function generateBezierPoints(waypoints: { lat: number; lng: number }[]): [numbe
     }
   }
   return points;
+}
+
+function generateBezierPointsWithSegments(waypoints: { lat: number; lng: number }[]) {
+  if (waypoints.length < 2) {
+    return { points: waypoints.map(w => [w.lat, w.lng] as [number, number]), segmentRanges: [] };
+  }
+  const points: [number, number][] = [];
+  const segmentRanges: { start: number; end: number }[] = [];
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const startIndex = points.length;
+    const p0 = waypoints[Math.max(0, i - 1)];
+    const p1 = waypoints[i];
+    const p2 = waypoints[i + 1];
+    const p3 = waypoints[Math.min(waypoints.length - 1, i + 2)];
+    for (let t = 0; t <= 1; t += 0.05) {
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const lat = 0.5 * (
+        (2 * p1.lat) +
+        (-p0.lat + p2.lat) * t +
+        (2 * p0.lat - 5 * p1.lat + 4 * p2.lat - p3.lat) * t2 +
+        (-p0.lat + 3 * p1.lat - 3 * p2.lat + p3.lat) * t3
+      );
+      const lng = 0.5 * (
+        (2 * p1.lng) +
+        (-p0.lng + p2.lng) * t +
+        (2 * p0.lng - 5 * p1.lng + 4 * p2.lng - p3.lng) * t2 +
+        (-p0.lng + 3 * p1.lng - 3 * p2.lng + p3.lng) * t3
+      );
+      points.push([lat, lng]);
+    }
+    const endIndex = points.length - 1;
+    segmentRanges.push({ start: startIndex, end: endIndex });
+  }
+  return { points, segmentRanges };
+}
+
+function haversineDistance(a: [number, number], b: [number, number]) {
+  const R = 6371000;
+  const dLat = (b[0] - a[0]) * Math.PI / 180;
+  const dLng = (b[1] - a[1]) * Math.PI / 180;
+  const lat1 = a[0] * Math.PI / 180;
+  const lat2 = b[0] * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function mixColor(a: [number, number, number], b: [number, number, number], t: number) {
+  const clampT = Math.min(1, Math.max(0, t));
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * clampT),
+    Math.round(a[1] + (b[1] - a[1]) * clampT),
+    Math.round(a[2] + (b[2] - a[2]) * clampT),
+  ] as [number, number, number];
+}
+
+function severityColor(level: number) {
+  const green: [number, number, number] = [34, 197, 94];
+  const orange: [number, number, number] = [249, 115, 22];
+  const red: [number, number, number] = [239, 68, 68];
+  if (level <= 0.5) {
+    return mixColor(green, orange, level / 0.5);
+  }
+  return mixColor(orange, red, (level - 0.5) / 0.5);
 }
 
 function interpolateAltitude(waypoints: { altitude: number }[], t: number) {
@@ -231,14 +296,45 @@ function GroundMap({
   );
 }
 
-function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
+function RouteTube({
+  curve,
+  segmentProgress,
+}: {
+  curve: THREE.CatmullRomCurve3;
+  segmentProgress: Array<{ start: number; end: number; level: number }>;
+}) {
   const geometry = useMemo(() => {
-    return new THREE.TubeGeometry(curve, 128, 1.5, 8, false);
-  }, [curve]);
+    const tubularSegments = 256;
+    const radialSegments = 8;
+    const geo = new THREE.TubeGeometry(curve, tubularSegments, 1.5, radialSegments, false);
+    const colors = new Float32Array((tubularSegments + 1) * (radialSegments + 1) * 3);
+    let ptr = 0;
+    for (let s = 0; s <= tubularSegments; s++) {
+      const t = s / tubularSegments;
+      let color = new THREE.Color('#3b82f6');
+      if (segmentProgress.length > 0) {
+        const idx = segmentProgress.findIndex(seg => t <= seg.end);
+        const seg = segmentProgress[Math.max(0, idx)];
+        const next = segmentProgress[Math.min(segmentProgress.length - 1, Math.max(0, idx) + 1)];
+        const denom = seg.end - seg.start || 1;
+        const localT = Math.min(1, Math.max(0, (t - seg.start) / denom));
+        const level = seg.level + (next.level - seg.level) * localT;
+        const [r, g, b] = severityColor(level);
+        color = new THREE.Color(r / 255, g / 255, b / 255);
+      }
+      for (let r = 0; r <= radialSegments; r++) {
+        colors[ptr++] = color.r;
+        colors[ptr++] = color.g;
+        colors[ptr++] = color.b;
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    return geo;
+  }, [curve, segmentProgress]);
 
   return (
     <mesh geometry={geometry}>
-      <meshBasicMaterial color="#3b82f6" transparent opacity={0.9} />
+      <meshBasicMaterial vertexColors transparent opacity={0.9} />
     </mesh>
   );
 }
@@ -293,10 +389,11 @@ function DroneSimulation({ points }: { points: THREE.Vector3[] }) {
 }
 
 function Scene() {
-  const { waypoints, lastPattern } = useRoute();
+  const { waypoints, lastPattern, routeAnalysis } = useRoute();
   const points = useMemo(() => waypointsTo3D(waypoints), [waypoints]);
   const [mapReady, setMapReady] = useState(false);
   const curveLatLng = useMemo(() => generateBezierPoints(waypoints), [waypoints]);
+  const curveData = useMemo(() => generateBezierPointsWithSegments(waypoints), [waypoints]);
   const curvePoints = useMemo(() => {
     if (waypoints.length === 0) return [];
     const center = waypoints[0];
@@ -330,6 +427,33 @@ function Scene() {
     return toPoint3D(tileCenter.lat, tileCenter.lng, 0, origin.lat, origin.lng);
   }, [tileCenter, waypoints]);
 
+  const segmentProgress = useMemo(() => {
+    if (curveData.segmentRanges.length === 0 || routeAnalysis.segments.length === 0) return [];
+    const currents = routeAnalysis.segments.map(s => s.averageCurrent);
+    const minCurrent = Math.min(...currents);
+    const maxCurrent = Math.max(...currents);
+    const levels = currents.map(v => {
+      if (maxCurrent === minCurrent) return 0.5;
+      return Math.min(1, Math.max(0, (v - minCurrent) / (maxCurrent - minCurrent)));
+    });
+    const segmentLengths = curveData.segmentRanges.map(range => {
+      let length = 0;
+      for (let i = range.start; i < range.end; i++) {
+        length += haversineDistance(curveData.points[i], curveData.points[i + 1]);
+      }
+      return length;
+    });
+    const totalLength = segmentLengths.reduce((acc, v) => acc + v, 0);
+    if (totalLength === 0) return [];
+    let acc = 0;
+    return segmentLengths.map((len, i) => {
+      const start = acc / totalLength;
+      acc += len;
+      const end = acc / totalLength;
+      return { start, end, level: levels[i] ?? 0.5 };
+    });
+  }, [curveData, routeAnalysis.segments]);
+
   return (
     <>
       <ambientLight intensity={0.4} />
@@ -355,7 +479,7 @@ function Scene() {
         />
       )}
       <WaypointSpheres points={points} />
-      {curve && <RouteTube curve={curve} />}
+      {curve && <RouteTube curve={curve} segmentProgress={segmentProgress} />}
       {curvePoints.length > 1 && <DroneSimulation points={curvePoints} />}
       <OrbitControls makeDefault target={[gridCenter.x, 0, gridCenter.z]} />
     </>

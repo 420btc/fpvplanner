@@ -3,24 +3,28 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useRoute } from '@/contexts/RouteContext';
 import { SavedRoute } from '@/types/route';
-import { Play, Pause, Square, Save, FolderOpen, Trash2, Gauge, MousePointer } from 'lucide-react';
+import { Play, Pause, Square, Save, FolderOpen, Trash2, Gauge, MousePointer, Battery } from 'lucide-react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Slider } from '@/components/ui/slider';
 import { toast } from 'sonner';
 import { PATTERNS, PatternType } from '@/lib/patterns';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { BATTERY_PROFILES } from '@/lib/battery';
 
 export default function TopBar() {
   const {
     routeName, setRouteName, waypoints,
     simulationState, toggleSimulation, stopSimulation,
-    simulationSpeed, setSimulationSpeed,
+    simulationSpeed, setSimulationSpeed, simulationProgress,
     saveRoute, getSavedRoutes, loadRoute, deleteRoute, clearRoute,
     activePattern, setActivePattern, patternRadius, setPatternRadius,
-    lastPattern, patternMaxAltitude, setPatternMaxAltitude
+    lastPattern, patternMaxAltitude, setPatternMaxAltitude,
+    selectedBattery, setSelectedBatteryId, routeAnalysis
   } = useRoute();
   const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
+  const simulatedConsumption = Math.max(0, Math.min(routeAnalysis.totalConsumption * simulationProgress, routeAnalysis.totalConsumption));
 
   const handleSave = () => {
     if (waypoints.length < 2) { toast.error('Agrega al menos 2 puntos'); return; }
@@ -29,6 +33,13 @@ export default function TopBar() {
   };
 
   const handleOpenLoad = () => setSavedRoutes(getSavedRoutes());
+
+  // Formatear tiempo en mm:ss
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   return (
     <header className="flex h-14 items-center gap-2 border-b border-border bg-card px-3 shadow-sm">
@@ -121,6 +132,39 @@ export default function TopBar() {
         className="h-8 w-40 bg-muted text-sm"
         placeholder="Nombre ruta..."
       />
+
+      <div className="flex items-center gap-1 ml-1 border-r border-border pr-3 mr-1">
+        <Select value={selectedBattery.id} onValueChange={setSelectedBatteryId}>
+          <SelectTrigger className="h-8 w-[140px] text-xs">
+            <SelectValue placeholder="Batería" />
+          </SelectTrigger>
+          <SelectContent>
+            {BATTERY_PROFILES.map(b => (
+              <SelectItem key={b.id} value={b.id} className="text-xs">
+                {b.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        
+        <div className="flex flex-col text-[10px] leading-tight ml-1 w-24">
+           <div className="flex justify-between w-full">
+              <span className="text-muted-foreground">Consumo:</span>
+              <span className={
+                routeAnalysis.batteryStatus === 'crash' ? 'text-destructive font-bold' :
+                routeAnalysis.batteryStatus === 'critical' ? 'text-orange-500 font-bold' :
+                routeAnalysis.batteryStatus === 'warning' ? 'text-yellow-500' : 
+                'text-primary'
+              }>
+                {simulationState === 'idle' ? Math.round(routeAnalysis.totalConsumption) : Math.round(simulatedConsumption)} mAh
+              </span>
+           </div>
+           <div className="flex justify-between w-full">
+              <span className="text-muted-foreground">Tiempo:</span>
+              <span>{formatTime(routeAnalysis.totalTime)}</span>
+           </div>
+        </div>
+      </div>
 
       <div className="flex items-center gap-1 ml-1">
         <Button size="sm" variant="ghost" onClick={handleSave} title="Guardar">

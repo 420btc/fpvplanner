@@ -3,16 +3,19 @@ import mapboxgl, { Map, Marker } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import type { FeatureCollection, LineString, Point } from 'geojson';
 import { useRoute } from '@/contexts/RouteContext';
-import { Button } from '@/components/ui/button';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 const MAPBOX_STYLE_SAT = 'mapbox://styles/mapbox/satellite-v9';
 const MAPBOX_STYLE_NORMAL = 'mapbox://styles/mapbox/streets-v12';
 
-function generateBezierPoints(waypoints: { lat: number; lng: number }[]): [number, number][] {
-  if (waypoints.length < 2) return waypoints.map(w => [w.lat, w.lng]);
+function generateBezierPointsWithSegments(waypoints: { lat: number; lng: number }[]) {
+  if (waypoints.length < 2) {
+    return { points: waypoints.map(w => [w.lat, w.lng] as [number, number]), segmentRanges: [] };
+  }
   const points: [number, number][] = [];
+  const segmentRanges: { start: number; end: number }[] = [];
   for (let i = 0; i < waypoints.length - 1; i++) {
+    const startIndex = points.length;
     const p0 = waypoints[Math.max(0, i - 1)];
     const p1 = waypoints[i];
     const p2 = waypoints[i + 1];
@@ -34,13 +37,49 @@ function generateBezierPoints(waypoints: { lat: number; lng: number }[]): [numbe
       );
       points.push([lat, lng]);
     }
+    const endIndex = points.length - 1;
+    segmentRanges.push({ start: startIndex, end: endIndex });
   }
-  return points;
+  return { points, segmentRanges };
+}
+
+function haversineDistance(a: [number, number], b: [number, number]) {
+  const R = 6371000;
+  const dLat = (b[0] - a[0]) * Math.PI / 180;
+  const dLng = (b[1] - a[1]) * Math.PI / 180;
+  const lat1 = a[0] * Math.PI / 180;
+  const lat2 = b[0] * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function mixColor(a: [number, number, number], b: [number, number, number], t: number) {
+  const clampT = Math.min(1, Math.max(0, t));
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * clampT),
+    Math.round(a[1] + (b[1] - a[1]) * clampT),
+    Math.round(a[2] + (b[2] - a[2]) * clampT),
+  ] as [number, number, number];
+}
+
+function rgbToHex([r, g, b]: [number, number, number]) {
+  return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function severityColor(level: number) {
+  const green: [number, number, number] = [34, 197, 94];
+  const orange: [number, number, number] = [249, 115, 22];
+  const red: [number, number, number] = [239, 68, 68];
+  if (level <= 0.5) {
+    return rgbToHex(mixColor(green, orange, level / 0.5));
+  }
+  return rgbToHex(mixColor(orange, red, (level - 0.5) / 0.5));
 }
 
 export default function MapView() {
-  const { waypoints, updateWaypoint, simulationState, simulationProgress, activePattern, addPattern, addWaypoint, patternRadius } = useRoute();
-  const curvePoints = generateBezierPoints(waypoints);
+  const { waypoints, updateWaypoint, simulationState, simulationProgress, activePattern, addPattern, addWaypoint, patternRadius, routeAnalysis } = useRoute();
+  const curveData = useMemo(() => generateBezierPointsWithSegments(waypoints), [waypoints]);
+  const curvePoints = curveData.points;
   const [mapStyle, setMapStyle] = useState<'satellite' | 'normal'>('satellite');
   const [styleReady, setStyleReady] = useState(0);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -53,6 +92,46 @@ export default function MapView() {
   const patternRadiusRef = useRef(patternRadius);
   const addPatternRef = useRef(addPattern);
   const addWaypointRef = useRef(addWaypoint);
+
+  const lineGradient = useMemo(() => {
+    if (curveData.segmentRanges.length === 0 || routeAnalysis.segments.length === 0) {
+      return ['interpolate', ['linear'], ['line-progress'], 0, '#22c55e', 1, '#22c55e'] as mapboxgl.Expression;
+    }
+    const segmentCurrents = routeAnalysis.segments.map(s => s.averageCurrent);
+    const minCurrent = Math.min(...segmentCurrents);
+    const maxCurrent = Math.max(...segmentCurrents);
+    const levels = segmentCurrents.map(v => {
+      if (maxCurrent === minCurrent) return 0.5;
+      return Math.min(1, Math.max(0, (v - minCurrent) / (maxCurrent - minCurrent)));
+    });
+
+    const segmentLengths = curveData.segmentRanges.map(range => {
+      let length = 0;
+      for (let i = range.start; i < range.end; i++) {
+        length += haversineDistance(curvePoints[i], curvePoints[i + 1]);
+      }
+      return length;
+    });
+    const totalLength = segmentLengths.reduce((acc, v) => acc + v, 0);
+    if (totalLength === 0) {
+      return ['interpolate', ['linear'], ['line-progress'], 0, '#22c55e', 1, '#22c55e'] as mapboxgl.Expression;
+    }
+
+    const stops: (number | string)[] = [];
+    let acc = 0;
+    for (let i = 0; i < segmentLengths.length; i++) {
+      const startProgress = acc / totalLength;
+      acc += segmentLengths[i];
+      const endProgress = acc / totalLength;
+      const currentColor = severityColor(levels[i] ?? 0.5);
+      const nextColor = severityColor(levels[i + 1] ?? levels[i] ?? 0.5);
+      if (i === 0) {
+        stops.push(0, currentColor);
+      }
+      stops.push(endProgress, nextColor);
+    }
+    return ['interpolate', ['linear'], ['line-progress'], ...stops] as mapboxgl.Expression;
+  }, [curveData.segmentRanges, curvePoints, routeAnalysis.segments]);
 
   useEffect(() => {
     activePatternRef.current = activePattern;
@@ -137,19 +216,20 @@ export default function MapView() {
     };
 
     if (!map.getSource(routeSourceId)) {
-      map.addSource(routeSourceId, { type: 'geojson', data: routeGeoJson });
+      map.addSource(routeSourceId, { type: 'geojson', data: routeGeoJson, lineMetrics: true });
       map.addLayer({
         id: 'route-line',
         type: 'line',
         source: routeSourceId,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#3b82f6', 'line-width': 3, 'line-opacity': 0.9 },
+        paint: { 'line-color': '#3b82f6', 'line-width': 3, 'line-opacity': 0.9, 'line-gradient': lineGradient },
       });
     } else {
       const source = map.getSource(routeSourceId) as mapboxgl.GeoJSONSource;
       source.setData(routeGeoJson);
+      map.setPaintProperty('route-line', 'line-gradient', lineGradient);
     }
-  }, [curvePoints, styleReady]);
+  }, [curvePoints, lineGradient, styleReady]);
 
   useEffect(() => {
     const map = mapRef.current;

@@ -1,6 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Waypoint, SavedRoute, SimulationState } from '@/types/route';
 import { PatternType, generatePattern } from '@/lib/patterns';
+import { BATTERY_PROFILES, BatteryProfile } from '@/lib/battery';
+import { analyzeRoute, RouteAnalysis } from '@/lib/physics';
 
 const STORAGE_KEY = 'fpv-routes';
 
@@ -17,6 +19,7 @@ export function useRouteStore() {
   const [activePattern, setActivePattern] = useState<PatternType | null>(null);
   const [patternRadius, setPatternRadiusState] = useState(80);
   const [patternMaxAltitude, setPatternMaxAltitudeState] = useState(100);
+  const [selectedBatteryId, setSelectedBatteryId] = useState<string>(BATTERY_PROFILES[0].id);
   const [lastPattern, setLastPattern] = useState<{
     type: PatternType;
     centerLat: number;
@@ -175,6 +178,14 @@ export function useRouteStore() {
   const minAltitude = waypoints.length ? Math.min(...waypoints.map(w => w.altitude)) : 0;
   const maxAltitude = waypoints.length ? Math.max(...waypoints.map(w => w.altitude)) : 0;
 
+  const selectedBattery = useMemo(() => 
+    BATTERY_PROFILES.find(b => b.id === selectedBatteryId) || BATTERY_PROFILES[0], 
+  [selectedBatteryId]);
+
+  const routeAnalysis = useMemo(() => {
+    return analyzeRoute(waypoints, selectedBattery);
+  }, [waypoints, selectedBattery]);
+
   return {
     waypoints, routeName, setRouteName,
     addWaypoint, addPattern, updateWaypoint, removeWaypoint, clearRoute,
@@ -186,5 +197,6 @@ export function useRouteStore() {
     toggleSimulation, stopSimulation,
     getSavedRoutes, saveRoute, loadRoute, deleteRoute,
     totalDistance, minAltitude, maxAltitude,
+    selectedBattery, setSelectedBatteryId, routeAnalysis,
   };
 }
