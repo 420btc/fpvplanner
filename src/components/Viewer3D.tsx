@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
+import mapboxgl from 'mapbox-gl';
 import * as THREE from 'three';
 import { useRoute } from '@/contexts/RouteContext';
 
@@ -9,8 +10,13 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 const MAPBOX_STYLE = 'mapbox/satellite-v9';
 
 function toPoint3D(lat: number, lng: number, altitude: number, centerLat: number, centerLng: number) {
-  const x = (lng - centerLng) * 111320 * Math.cos(centerLat * Math.PI / 180) / 10 * SCALE;
-  const z = -(lat - centerLat) * 110540 / 10 * SCALE;
+  const center = mapboxgl.MercatorCoordinate.fromLngLat({ lng: centerLng, lat: centerLat }, 0);
+  const point = mapboxgl.MercatorCoordinate.fromLngLat({ lng, lat }, 0);
+  const unitsPerMeter = center.meterInMercatorCoordinateUnits();
+  const dxMeters = (point.x - center.x) / unitsPerMeter;
+  const dzMeters = (point.y - center.y) / unitsPerMeter;
+  const x = dxMeters / 10 * SCALE;
+  const z = dzMeters / 10 * SCALE;
   const y = altitude / 10 * SCALE;
   return new THREE.Vector3(x, y, z);
 }
@@ -99,6 +105,14 @@ function centerLatLng(waypoints: { lat: number; lng: number }[]) {
   return { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
 }
 
+function tileToLatLng(x: number, y: number, zoom: number) {
+  const n = Math.pow(2, zoom);
+  const lng = x / n * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+  const lat = latRad * 180 / Math.PI;
+  return { lat, lng };
+}
+
 function latLngToTile(lat: number, lng: number, zoom: number) {
   const n = Math.pow(2, zoom);
   const xtile = Math.floor((lng + 180) / 360 * n);
@@ -107,15 +121,15 @@ function latLngToTile(lat: number, lng: number, zoom: number) {
   return { x: xtile, y: ytile };
 }
 
-function mapSizeForLat(lat: number, zoom: number) {
+function mapSizeForLat(lat: number, zoom: number, tileSize: number) {
   const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
-  const widthMeters = metersPerPixel * 256 * 3;
+  const widthMeters = metersPerPixel * tileSize * 3;
   return widthMeters / 10 * SCALE;
 }
 
 function tileUrl(x: number, y: number, z: number) {
   if (!MAPBOX_TOKEN) return null;
-  return `https://api.mapbox.com/styles/v1/${MAPBOX_STYLE}/tiles/256/${z}/${x}/${y}?access_token=${MAPBOX_TOKEN}`;
+  return `https://api.mapbox.com/styles/v1/${MAPBOX_STYLE}/tiles/512/${z}/${x}/${y}@2x?access_token=${MAPBOX_TOKEN}`;
 }
 
 function GroundMap({
@@ -131,7 +145,8 @@ function GroundMap({
 }) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const zoom = 16;
-  const size = mapSizeForLat(lat, zoom);
+  const tileSize = 512;
+  const size = mapSizeForLat(lat, zoom, tileSize);
   const geometry = useMemo(() => {
     const geo = new THREE.PlaneGeometry(size, size, 128, 128);
     const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -165,7 +180,6 @@ function GroundMap({
     }
 
     const canvas = document.createElement('canvas');
-    const tileSize = 256;
     canvas.width = tileSize * 3;
     canvas.height = tileSize * 3;
     const ctx = canvas.getContext('2d');
@@ -215,7 +229,7 @@ function GroundMap({
 
 function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
   const geometry = useMemo(() => {
-    return new THREE.TubeGeometry(curve, 128, 0.3, 8, false);
+    return new THREE.TubeGeometry(curve, 128, 1.5, 8, false);
   }, [curve]);
 
   return (
@@ -299,11 +313,17 @@ function Scene() {
     }
     return centerLatLng(waypoints);
   }, [lastPattern, waypoints]);
+
+  const tileCenter = useMemo(() => {
+    const { x, y } = latLngToTile(mapCenter.lat, mapCenter.lng, 16);
+    return tileToLatLng(x + 0.5, y + 0.5, 16);
+  }, [mapCenter]);
+
   const mapPosition = useMemo(() => {
     if (waypoints.length === 0) return new THREE.Vector3(0, 0, 0);
     const origin = waypoints[0];
-    return toPoint3D(mapCenter.lat, mapCenter.lng, 0, origin.lat, origin.lng);
-  }, [mapCenter.lat, mapCenter.lng, waypoints]);
+    return toPoint3D(tileCenter.lat, tileCenter.lng, 0, origin.lat, origin.lng);
+  }, [tileCenter, waypoints]);
 
   return (
     <>
@@ -311,8 +331,8 @@ function Scene() {
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
       {waypoints.length > 0 && (
         <GroundMap
-          lat={mapCenter.lat}
-          lng={mapCenter.lng}
+          lat={tileCenter.lat}
+          lng={tileCenter.lng}
           position={mapPosition}
           onReady={setMapReady}
         />

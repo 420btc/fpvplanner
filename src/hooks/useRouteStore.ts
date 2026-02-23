@@ -16,6 +16,7 @@ export function useRouteStore() {
   const [simulationProgress, setSimulationProgress] = useState(0);
   const [activePattern, setActivePattern] = useState<PatternType | null>(null);
   const [patternRadius, setPatternRadiusState] = useState(80);
+  const [patternMaxAltitude, setPatternMaxAltitudeState] = useState(100);
   const [lastPattern, setLastPattern] = useState<{
     type: PatternType;
     centerLat: number;
@@ -42,7 +43,7 @@ export function useRouteStore() {
   }, []);
 
   const addPattern = useCallback((type: PatternType, lat: number, lng: number, radius: number) => {
-    const patternWaypoints = generatePattern(type, lat, lng, radius);
+    const patternWaypoints = generatePattern(type, lat, lng, radius, undefined, undefined, patternMaxAltitude);
     setWaypoints(prev => [...prev, ...patternWaypoints]);
     setLastPattern({
       type,
@@ -51,7 +52,7 @@ export function useRouteStore() {
       waypointIds: patternWaypoints.map(wp => wp.id),
     });
     setActivePattern(null);
-  }, []);
+  }, [patternMaxAltitude]);
 
   const setPatternRadius = useCallback((radius: number) => {
     setPatternRadiusState(radius);
@@ -63,7 +64,9 @@ export function useRouteStore() {
         lastPattern.centerLat,
         lastPattern.centerLng,
         radius,
-        pointsCount
+        pointsCount,
+        undefined,
+        patternMaxAltitude
       );
       const indexById = new Map(lastPattern.waypointIds.map((id, i) => [id, i]));
       return prev.map(wp => {
@@ -73,7 +76,31 @@ export function useRouteStore() {
         return { ...next, id: wp.id };
       });
     });
-  }, [inferPointsCount, lastPattern]);
+  }, [inferPointsCount, lastPattern, patternMaxAltitude]);
+
+  const setPatternMaxAltitude = useCallback((altitude: number) => {
+    setPatternMaxAltitudeState(altitude);
+    setWaypoints(prev => {
+      if (!lastPattern) return prev;
+      const pointsCount = inferPointsCount(lastPattern.type, lastPattern.waypointIds.length);
+      const regenerated = generatePattern(
+        lastPattern.type,
+        lastPattern.centerLat,
+        lastPattern.centerLng,
+        patternRadius,
+        pointsCount,
+        undefined,
+        altitude
+      );
+      const indexById = new Map(lastPattern.waypointIds.map((id, i) => [id, i]));
+      return prev.map(wp => {
+        const idx = indexById.get(wp.id);
+        if (idx === undefined) return wp;
+        const next = regenerated[idx];
+        return { ...next, id: wp.id };
+      });
+    });
+  }, [inferPointsCount, lastPattern, patternRadius]);
 
   const updateWaypoint = useCallback((id: string, updates: Partial<Waypoint>) => {
     setWaypoints(prev => prev.map(wp => wp.id === id ? { ...wp, ...updates } : wp));
@@ -152,6 +179,7 @@ export function useRouteStore() {
     waypoints, routeName, setRouteName,
     addWaypoint, addPattern, updateWaypoint, removeWaypoint, clearRoute,
     activePattern, setActivePattern, patternRadius, setPatternRadius,
+    patternMaxAltitude, setPatternMaxAltitude,
     lastPattern,
     simulationState, simulationSpeed, setSimulationSpeed,
     simulationProgress, setSimulationProgress,

@@ -1,25 +1,14 @@
-import { useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, useMapEvents } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import mapboxgl, { Map, Marker } from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import type { FeatureCollection, LineString, Point } from 'geojson';
 import { useRoute } from '@/contexts/RouteContext';
 import PatternToolbar from '@/components/PatternToolbar';
 import { Button } from '@/components/ui/button';
 
-// Fix default marker icon
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
-
-const waypointIcon = new L.DivIcon({
-  className: 'custom-marker',
-  html: `<div style="width:16px;height:16px;border-radius:50%;background:#3b82f6;border:3px solid #93c5fd;box-shadow:0 0 12px #3b82f680;"></div>`,
-  iconSize: [16, 16],
-  iconAnchor: [8, 8],
-});
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
+const MAPBOX_STYLE_SAT = 'mapbox://styles/mapbox/satellite-v9';
+const MAPBOX_STYLE_NORMAL = 'mapbox://styles/mapbox/streets-v12';
 
 function generateBezierPoints(waypoints: { lat: number; lng: number }[]): [number, number][] {
   if (waypoints.length < 2) return waypoints.map(w => [w.lat, w.lng]);
@@ -50,24 +39,28 @@ function generateBezierPoints(waypoints: { lat: number; lng: number }[]): [numbe
   return points;
 }
 
-function ClickHandler() {
-  const { addWaypoint, activePattern, addPattern, patternRadius } = useRoute();
-  useMapEvents({
-    click(e) {
-      if (activePattern) {
-        addPattern(activePattern, e.latlng.lat, e.latlng.lng, patternRadius);
-      } else {
-        addWaypoint(e.latlng.lat, e.latlng.lng);
-      }
-    },
-  });
-  return null;
-}
-
 export default function MapView() {
-  const { waypoints, updateWaypoint, simulationState, simulationProgress } = useRoute();
+  const { waypoints, updateWaypoint, simulationState, simulationProgress, activePattern, addPattern, addWaypoint, patternRadius } = useRoute();
   const curvePoints = generateBezierPoints(waypoints);
   const [mapStyle, setMapStyle] = useState<'satellite' | 'normal'>('satellite');
+  const [styleReady, setStyleReady] = useState(0);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<Map | null>(null);
+  const markersRef = useRef<Record<string, Marker>>({});
+  const droneSourceId = 'drone';
+  const routeSourceId = 'route';
+  const initialStyleRef = useRef(mapStyle);
+  const activePatternRef = useRef(activePattern);
+  const patternRadiusRef = useRef(patternRadius);
+  const addPatternRef = useRef(addPattern);
+  const addWaypointRef = useRef(addWaypoint);
+
+  useEffect(() => {
+    activePatternRef.current = activePattern;
+    patternRadiusRef.current = patternRadius;
+    addPatternRef.current = addPattern;
+    addWaypointRef.current = addWaypoint;
+  }, [activePattern, patternRadius, addPattern, addWaypoint]);
 
   const dronePosition = useMemo(() => {
     if (simulationState === 'idle' || curvePoints.length < 2) return null;
@@ -80,10 +73,181 @@ export default function MapView() {
     return [lat1 + (lat2 - lat1) * t, lng1 + (lng2 - lng1) * t] as [number, number];
   }, [simulationState, simulationProgress, curvePoints]);
 
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+    mapboxgl.accessToken = MAPBOX_TOKEN ?? '';
+    const map = new mapboxgl.Map({
+      container: mapContainerRef.current,
+      style: initialStyleRef.current === 'satellite' ? MAPBOX_STYLE_SAT : MAPBOX_STYLE_NORMAL,
+      center: [-3.7038, 40.4168],
+      zoom: 16,
+      attributionControl: false,
+    });
+    mapRef.current = map;
+
+    map.on('click', (e) => {
+      const pattern = activePatternRef.current;
+      const radius = patternRadiusRef.current;
+      if (pattern) {
+        addPatternRef.current(pattern, e.lngLat.lat, e.lngLat.lng, radius);
+      } else {
+        addWaypointRef.current(e.lngLat.lat, e.lngLat.lng);
+      }
+    });
+    map.dragRotate.enable();
+    map.touchZoomRotate.enableRotation();
+    map.setPitch(0);
+    map.on('load', () => {
+      setStyleReady(v => v + 1);
+    });
+    map.on('style.load', () => {
+      setStyleReady(v => v + 1);
+    });
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const styleUrl = mapStyle === 'satellite' ? MAPBOX_STYLE_SAT : MAPBOX_STYLE_NORMAL;
+    map.setStyle(styleUrl);
+    map.once('style.load', () => {
+      map.resize();
+      setStyleReady(v => v + 1);
+    });
+  }, [mapStyle]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleReady === 0) return;
+
+    const routeGeoJson: FeatureCollection<LineString> = {
+      type: 'FeatureCollection',
+      features: curvePoints.length > 1 ? [{
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: curvePoints.map(([lat, lng]) => [lng, lat]),
+        },
+        properties: {},
+      }] : [],
+    };
+
+    if (!map.getSource(routeSourceId)) {
+      map.addSource(routeSourceId, { type: 'geojson', data: routeGeoJson });
+      map.addLayer({
+        id: 'route-line',
+        type: 'line',
+        source: routeSourceId,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#3b82f6', 'line-width': 3, 'line-opacity': 0.9 },
+      });
+    } else {
+      const source = map.getSource(routeSourceId) as mapboxgl.GeoJSONSource;
+      source.setData(routeGeoJson);
+    }
+  }, [curvePoints, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleReady === 0) return;
+    const droneGeoJson: FeatureCollection<Point> = {
+      type: 'FeatureCollection',
+      features: dronePosition ? [{
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [dronePosition[1], dronePosition[0]],
+        },
+        properties: {},
+      }] : [],
+    };
+
+    if (!map.getSource(droneSourceId)) {
+      map.addSource(droneSourceId, { type: 'geojson', data: droneGeoJson });
+      map.addLayer({
+        id: 'drone-point',
+        type: 'circle',
+        source: droneSourceId,
+        paint: {
+          'circle-radius': 6,
+          'circle-color': '#f59e0b',
+          'circle-stroke-color': '#facc15',
+          'circle-stroke-width': 2,
+        },
+      });
+    } else {
+      const source = map.getSource(droneSourceId) as mapboxgl.GeoJSONSource;
+      source.setData(droneGeoJson);
+    }
+  }, [dronePosition, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleReady === 0) return;
+
+    const nextIds = new Set(waypoints.map(wp => wp.id));
+    Object.entries(markersRef.current).forEach(([id, marker]) => {
+      if (!nextIds.has(id)) {
+        marker.remove();
+        delete markersRef.current[id];
+      }
+    });
+
+    waypoints.forEach((wp) => {
+      const existing = markersRef.current[wp.id];
+      if (existing) {
+        existing.setLngLat([wp.lng, wp.lat]);
+        return;
+      }
+      const el = document.createElement('div');
+      el.style.width = '16px';
+      el.style.height = '16px';
+      el.style.borderRadius = '50%';
+      el.style.background = '#3b82f6';
+      el.style.border = '3px solid #93c5fd';
+      el.style.boxShadow = '0 0 12px #3b82f680';
+      const marker = new mapboxgl.Marker({ element: el, draggable: true })
+        .setLngLat([wp.lng, wp.lat])
+        .addTo(map);
+      marker.on('dragend', () => {
+        const { lng, lat } = marker.getLngLat();
+        updateWaypoint(wp.id, { lat, lng });
+      });
+      markersRef.current[wp.id] = marker;
+    });
+  }, [updateWaypoint, waypoints, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const onStyleLoad = () => {
+      map.resize();
+    };
+    map.on('style.load', onStyleLoad);
+    return () => {
+      map.off('style.load', onStyleLoad);
+    };
+  }, []);
+
   return (
     <div className="relative h-full w-full">
-      <PatternToolbar />
-      <div className="absolute top-3 left-16 z-[1000]">
+      <div
+        className="absolute top-3 left-3 z-[1000]"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <PatternToolbar />
+      </div>
+      <div
+        className="absolute top-3 left-16 z-[1000]"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
         <Button
           size="sm"
           variant="secondary"
@@ -93,52 +257,7 @@ export default function MapView() {
           {mapStyle === 'satellite' ? 'Normal' : 'Satélite'}
         </Button>
       </div>
-    <MapContainer
-      center={[40.4168, -3.7038]}
-      zoom={14}
-      className="h-full w-full"
-      zoomControl={false}
-    >
-      {mapStyle === 'satellite' ? (
-        <TileLayer
-          attribution='&copy; Esri'
-          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        />
-      ) : (
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-      )}
-      <ClickHandler />
-      {waypoints.map((wp, i) => (
-        <Marker
-          key={wp.id}
-          position={[wp.lat, wp.lng]}
-          icon={waypointIcon}
-          draggable
-          eventHandlers={{
-            dragend: (e) => {
-              const latlng = e.target.getLatLng();
-              updateWaypoint(wp.id, { lat: latlng.lat, lng: latlng.lng });
-            },
-          }}
-        />
-      ))}
-      {curvePoints.length > 1 && (
-        <Polyline
-          positions={curvePoints}
-          pathOptions={{ color: '#3b82f6', weight: 3, opacity: 0.9 }}
-        />
-      )}
-      {dronePosition && (
-        <CircleMarker
-          center={dronePosition}
-          radius={8}
-          pathOptions={{ color: '#facc15', fillColor: '#f59e0b', fillOpacity: 1, weight: 2 }}
-        />
-      )}
-    </MapContainer>
+      <div ref={mapContainerRef} className="h-full w-full" />
     </div>
   );
 }

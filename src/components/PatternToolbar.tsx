@@ -6,7 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { MousePointer } from 'lucide-react';
 
 export default function PatternToolbar() {
-  const { activePattern, setActivePattern, patternRadius, setPatternRadius, lastPattern } = useRoute();
+  const { activePattern, setActivePattern, patternRadius, setPatternRadius, lastPattern, patternMaxAltitude, setPatternMaxAltitude } = useRoute();
 
   return (
     <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-1 rounded-lg border border-border bg-card/70 p-1.5 backdrop-blur-sm shadow-lg">
@@ -62,6 +62,22 @@ export default function PatternToolbar() {
                 const next = Number(e.target.value);
                 if (Number.isNaN(next)) return;
                 setPatternRadius(Math.min(2000, Math.max(5, next)));
+              }}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="flex flex-col gap-1 pt-1">
+            <span className="text-[10px] text-muted-foreground">Altitud Final (m)</span>
+            <Input
+              type="number"
+              min={10}
+              max={3000}
+              step={10}
+              value={patternMaxAltitude}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (Number.isNaN(next)) return;
+                setPatternMaxAltitude(Math.min(3000, Math.max(10, next)));
               }}
               className="h-8 text-xs"
             />
