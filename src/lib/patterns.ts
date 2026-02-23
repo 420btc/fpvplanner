@@ -63,7 +63,7 @@ export function generatePattern(
           id: generateId(),
           lat: centerLat + Math.sin(angle) * r * dLat,
           lng: centerLng + Math.cos(angle) * r * dLng,
-          altitude: Math.round(startAlt + t * (endAlt - startAlt)),
+          altitude: Math.round(t * endAlt),
         });
       }
       break;

@@ -215,7 +215,7 @@ function GroundMap({
 
 function RouteTube({ curve }: { curve: THREE.CatmullRomCurve3 }) {
   const geometry = useMemo(() => {
-    return new THREE.TubeGeometry(curve, 128, 0.15, 8, false);
+    return new THREE.TubeGeometry(curve, 128, 0.3, 8, false);
   }, [curve]);
 
   return (
@@ -230,7 +230,7 @@ function WaypointSpheres({ points }: { points: THREE.Vector3[] }) {
     <>
       {points.map((p, i) => (
         <mesh key={i} position={p}>
-          <sphereGeometry args={[0.3, 16, 16]} />
+          <sphereGeometry args={[0.5, 16, 16]} />
           <meshStandardMaterial color="#e2e8f0" emissive="#94a3b8" emissiveIntensity={0.6} />
         </mesh>
       ))}
@@ -274,7 +274,7 @@ function DroneSimulation({ points }: { points: THREE.Vector3[] }) {
 }
 
 function Scene() {
-  const { waypoints } = useRoute();
+  const { waypoints, lastPattern } = useRoute();
   const points = useMemo(() => waypointsTo3D(waypoints), [waypoints]);
   const [mapReady, setMapReady] = useState(false);
   const curveLatLng = useMemo(() => generateBezierPoints(waypoints), [waypoints]);
@@ -293,7 +293,17 @@ function Scene() {
     const base = curvePoints.length > 0 ? curvePoints : points;
     return centerXZ(base);
   }, [curvePoints, points]);
-  const mapCenter = useMemo(() => centerLatLng(waypoints), [waypoints]);
+  const mapCenter = useMemo(() => {
+    if (lastPattern) {
+      return { lat: lastPattern.centerLat, lng: lastPattern.centerLng };
+    }
+    return centerLatLng(waypoints);
+  }, [lastPattern, waypoints]);
+  const mapPosition = useMemo(() => {
+    if (waypoints.length === 0) return new THREE.Vector3(0, 0, 0);
+    const origin = waypoints[0];
+    return toPoint3D(mapCenter.lat, mapCenter.lng, 0, origin.lat, origin.lng);
+  }, [mapCenter.lat, mapCenter.lng, waypoints]);
 
   return (
     <>
@@ -303,7 +313,7 @@ function Scene() {
         <GroundMap
           lat={mapCenter.lat}
           lng={mapCenter.lng}
-          position={gridCenter}
+          position={mapPosition}
           onReady={setMapReady}
         />
       )}
