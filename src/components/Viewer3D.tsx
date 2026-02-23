@@ -123,7 +123,7 @@ function latLngToTile(lat: number, lng: number, zoom: number) {
 
 function mapSizeForLat(lat: number, zoom: number, tileSize: number) {
   const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
-  const widthMeters = metersPerPixel * tileSize * 3;
+  const widthMeters = metersPerPixel * tileSize * 9;
   return widthMeters / 10 * SCALE;
 }
 
@@ -148,12 +148,16 @@ function GroundMap({
   const tileSize = 512;
   const size = mapSizeForLat(lat, zoom, tileSize);
   const geometry = useMemo(() => {
-    const geo = new THREE.PlaneGeometry(size, size, 128, 128);
+    // 9 tiles * 512px = 4608px texture width
+    // size is in world units (3D space)
+    // We increase segments for better terrain resolution on large area
+    const geo = new THREE.PlaneGeometry(size, size, 256, 256);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
-      const h = (Math.sin(x * 0.03) + Math.cos(y * 0.03)) * 0.6 + Math.sin((x + y) * 0.02) * 0.4;
+      // Flatten terrain a bit more for large scale visibility
+      const h = (Math.sin(x * 0.01) + Math.cos(y * 0.01)) * 2 + Math.sin((x + y) * 0.005) * 4;
       pos.setZ(i, h);
     }
     pos.needsUpdate = true;
@@ -165,8 +169,8 @@ function GroundMap({
     let active = true;
     const { x, y } = latLngToTile(lat, lng, zoom);
     const tiles: Array<[number, number]> = [];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
         tiles.push([x + dx, y + dy]);
       }
     }
@@ -180,8 +184,8 @@ function GroundMap({
     }
 
     const canvas = document.createElement('canvas');
-    canvas.width = tileSize * 3;
-    canvas.height = tileSize * 3;
+    canvas.width = tileSize * 9;
+    canvas.height = tileSize * 9;
     const ctx = canvas.getContext('2d');
 
     if (!ctx) return;
@@ -190,11 +194,11 @@ function GroundMap({
       return new Promise<{ img: HTMLImageElement; dx: number; dy: number }>((resolve) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
-        img.onload = () => resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
-        img.onerror = () => resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
+        img.onload = () => resolve({ img, dx: tx - x + 4, dy: ty - y + 4 });
+        img.onerror = () => resolve({ img, dx: tx - x + 4, dy: ty - y + 4 });
         const url = tileUrl(tx, ty, zoom);
         if (!url) {
-          resolve({ img, dx: tx - x + 1, dy: ty - y + 1 });
+          resolve({ img, dx: tx - x + 4, dy: ty - y + 4 });
           return;
         }
         img.src = url;
@@ -281,8 +285,9 @@ function DroneSimulation({ points }: { points: THREE.Vector3[] }) {
 
   return (
     <mesh ref={meshRef} position={pos}>
-      <sphereGeometry args={[0.4, 16, 16]} />
-      <meshStandardMaterial color="#facc15" emissive="#f59e0b" emissiveIntensity={1} />
+      <sphereGeometry args={[2, 32, 32]} />
+      <meshStandardMaterial color="#ffff00" emissive="#ffff00" emissiveIntensity={2} toneMapped={false} />
+      <pointLight color="#ffff00" intensity={5} distance={50} decay={2} />
     </mesh>
   );
 }
@@ -360,7 +365,8 @@ function Scene() {
 export default function Viewer3D() {
   return (
     <div className="h-full w-full bg-background">
-      <Canvas camera={{ position: [15, 15, 15], fov: 60 }}>
+      <Canvas camera={{ position: [15, 15, 15], fov: 60, near: 0.1, far: 50000 }}>
+        <fog attach="fog" args={['#e2e8f0', 1000, 4000]} />
         <Scene />
       </Canvas>
     </div>
