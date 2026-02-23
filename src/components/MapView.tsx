@@ -3,7 +3,6 @@ import mapboxgl, { Map, Marker } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import type { FeatureCollection, LineString, Point } from 'geojson';
 import { useRoute } from '@/contexts/RouteContext';
-import PatternToolbar from '@/components/PatternToolbar';
 import { Button } from '@/components/ui/button';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
@@ -79,7 +78,7 @@ export default function MapView() {
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
       style: initialStyleRef.current === 'satellite' ? MAPBOX_STYLE_SAT : MAPBOX_STYLE_NORMAL,
-      center: [-3.7038, 40.4168],
+      center: [-4.4990, 36.6235], // Torremolinos, Málaga
       zoom: 16,
       attributionControl: false,
     });
@@ -236,20 +235,6 @@ export default function MapView() {
 
   return (
     <div className="relative h-full w-full">
-      <div
-        className="absolute top-3 left-3 z-[1000]"
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => setMapStyle(prev => prev === 'satellite' ? 'normal' : 'satellite')}
-          className="h-8 text-xs shadow-md border border-border"
-        >
-          {mapStyle === 'satellite' ? 'Normal' : 'Satélite'}
-        </Button>
-      </div>
       <div ref={mapContainerRef} className="h-full w-full" />
     </div>
   );
